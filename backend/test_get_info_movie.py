@@ -1,22 +1,16 @@
 import requests
+import os
 from collections import Counter
 from supabase import create_client, Client 
-import os
+
 from dotenv import load_dotenv
 load_dotenv()
-api_key = os.getenv("TMDB_API_KEY")
-# "https://image.tmdb.org/t/p/w500/{poster_path}" หารูปโปรเตอร์
-
-# API_KEY = "a8b1b1c755f65614db2feaf47d025c14"
-# SUPABASE_URL = "https://igzbpbusinlqqjioeobs.supabase.co"
-# SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlnemJwYnVzaW5scXFqaW9lb2JzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgwMDQ5NzcsImV4cCI6MjEwMzU4MDk3N30.gLpKMTPCFnyQUf2CtpCXyH11odjff53MuEu-mOx1PBs"
-
 API_KEY = os.getenv("TMDB_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
+# "https://image.tmdb.org/t/p/w500/{poster_path}" หารูปโปรเตอร์
 class Movie:
     def __init__(self, id, title, original_title, poster_path):
         self.id = id
@@ -107,6 +101,25 @@ def login_account():
         except Exception as e:
             print(f"Error from Supabase: {e}") 
             
+def save_watchlist_to_supabase(user_id, watchlist):
+    for movie in watchlist:
+        try:
+            supabase.table("movies").upsert({
+                "id": movie.id,
+                "title": movie.name,
+                "poster_url": movie.poster
+                }).execute()
+        except Exception as e:
+            print(f"Error: {e}")
+
+        try:
+            supabase.table("favorite_movies").insert({
+                "user_id": user_id,
+                "movie_id": movie.id
+            }).execute()
+        except Exception as e:
+            print(f"Error: {e}")
+            
 
 def main():
     print("ระบบค้นหาแหล่งสตรีมมิ่ง")
@@ -146,11 +159,6 @@ def main():
     best_app_name, movie_count = find_most_frequent_app(watchlist)
     print(f"สมัคร {best_app_name} คุ้มสุด ดูได้ {movie_count}เรื่อง")
     print("=" * 10)
-    
-    # print(apps)
-    # print(f"My Watchlist:")
-    # for i in range(len(watchlist)):
-    #     print(watchlist[i].name)
-    
+    save_watchlist_to_supabase(user_id, watchlist)
 
 main()
