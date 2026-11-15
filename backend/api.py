@@ -35,6 +35,9 @@ app.add_middleware(
 # ==========================================
 IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
 CACHE: dict = {}
+MOVIE_DETAIL_CACHE: dict = {}  
+
+session = requests.Session()
 
 GENRE_MAP = {
     28: "Action", 12: "Adventure", 16: "Animation", 35: "Comedy",
@@ -101,26 +104,40 @@ def format_movie_for_react(item: dict):
     providers = []
 
     if movie_id:
-        try:
-            detail_url = f"https://api.themoviedb.org/3/{media_type}/{movie_id}?api_key={API_KEY}&language=th-TH&append_to_response=watch/providers"
-            detail_res = requests.get(detail_url, timeout=12).json()
-            
-            if detail_res.get("runtime"):
-                runtime = detail_res["runtime"]
-            elif detail_res.get("episode_run_time"):
-                runtime = detail_res["episode_run_time"][0]
-            if detail_res.get("tagline"):
-                tagline = detail_res["tagline"]
+        detail_cache_key = f"{media_type}_{movie_id}"
+        now = time.time()
 
-            th_providers = detail_res.get("watch/providers", {}).get("results", {}).get("TH", {})
-            for p in th_providers.get("flatrate", []):
-                p_name = p.get("provider_name", "")
-                if p_name in PROVIDER_MAP:
-                    mapped_id = PROVIDER_MAP[p_name]
-                    if mapped_id not in providers:
-                        providers.append(mapped_id)
-        except Exception:
-            pass
+        if detail_cache_key in MOVIE_DETAIL_CACHE and now < MOVIE_DETAIL_CACHE[detail_cache_key]["expires_at"]:
+            cached_detail = MOVIE_DETAIL_CACHE[detail_cache_key]["data"]
+            runtime = cached_detail["runtime"]
+            tagline = cached_detail["tagline"]
+            providers = cached_detail["providers"]
+        else:
+            try:
+                detail_url = f"https://api.themoviedb.org/3/{media_type}/{movie_id}?api_key={API_KEY}&language=th-TH&append_to_response=watch/providers"
+                detail_res = session.get(detail_url, timeout=5).json()
+                
+                if detail_res.get("runtime"):
+                    runtime = detail_res["runtime"]
+                elif detail_res.get("episode_run_time"):
+                    runtime = detail_res["episode_run_time"][0]
+                if detail_res.get("tagline"):
+                    tagline = detail_res["tagline"]
+
+                th_providers = detail_res.get("watch/providers", {}).get("results", {}).get("TH", {})
+                for p in th_providers.get("flatrate", []):
+                    p_name = p.get("provider_name", "")
+                    if p_name in PROVIDER_MAP:
+                        mapped_id = PROVIDER_MAP[p_name]
+                        if mapped_id not in providers:
+                            providers.append(mapped_id)
+
+                MOVIE_DETAIL_CACHE[detail_cache_key] = {
+                    "data": {"runtime": runtime, "tagline": tagline, "providers": providers},
+                    "expires_at": now + 1800,
+                }
+            except Exception:
+                pass
 
     vote_avg = round(item.get("vote_average", 0), 1)
     poster_url = f"{IMAGE_BASE_URL}{poster}" if poster else "https://via.placeholder.com/500x750?text=No+Poster"
@@ -141,15 +158,16 @@ def format_movie_for_react(item: dict):
         "providers": providers,
         "overview": item.get("overview") or "ไม่มีเรื่องย่อภาษาไทย",
     }
+
 def fetch_and_cache(cache_key: str, tmdb_url: str):
     now = time.time()
     if cache_key in CACHE and now < CACHE[cache_key]["expires_at"]:
         return CACHE[cache_key]["data"]
 
-    res = requests.get(tmdb_url).json()
+    res = session.get(tmdb_url, timeout=8).json()
     raw_movies = res.get("results", [])
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=12) as executor:
         formatted_movies = list(executor.map(format_movie_for_react, raw_movies))
 
     CACHE[cache_key] = {"data": formatted_movies, "expires_at": now + 600}
@@ -182,6 +200,10 @@ def ensure_movie_in_db(movie: MoviePayload):
 # ==========================================
 # 5. ENDPOINTS: TMDB DISCOVERY & SEARCH
 # ==========================================
+@app.get("/")
+def health_check():
+    return {"status": "ok"}
+
 @app.get("/api/movies/trending")
 def get_trending_movies():
     url = f"https://api.themoviedb.org/3/trending/movie/week?api_key={API_KEY}&language=th-TH"
@@ -194,33 +216,54 @@ def get_movies_by_genre(genre_id: int):
 
 @app.get("/api/movies/search")
 def search_movies(q: str):
-    if not q.strip():
+    clean_q = q.strip()
+    if not clean_q:
         return []
 
+    # 1. เช็ก Search Cache ก่อน (ถ้าเคยค้นคำนี้แล้ว ตอบกลับทันทีใน 0.001 วินาที)
+    search_cache_key = f"search_{clean_q.lower()}"
+    now = time.time()
+    if search_cache_key in CACHE and now < CACHE[search_cache_key]["expires_at"]:
+        return CACHE[search_cache_key]["data"]
+
     url = "https://api.themoviedb.org/3/search/multi"
-    res_th = requests.get(url, params={"api_key": API_KEY, "language": "th-TH", "query": q, "include_adult": "false"}).json().get("results", [])
-    res_en = requests.get(url, params={"api_key": API_KEY, "language": "en-US", "query": q, "include_adult": "false"}).json().get("results", [])
 
-    merged = {}
-    for item in res_th + res_en:
-        # เอาเฉพาะภาพยนตร์และซีรีส์ (ตัด person ออก)
-        if item.get("media_type") not in ("movie", "tv"):
-            continue
-        key = f"{item['media_type']}_{item['id']}"
-        if key not in merged:
-            merged[key] = item
-        elif item.get("title") or item.get("name"):
-            merged[key]["english_title"] = item.get("title") or item.get("name") or ""
+    def fetch_tmdb_lang(lang: str):
+        try:
+            return session.get(
+                url,
+                params={"api_key": API_KEY, "language": lang, "query": clean_q, "include_adult": "false"},
+                timeout=6,
+            ).json().get("results", [])
+        except Exception:
+            return []
 
-    raw_items = list(merged.values())
-    raw_items.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+    with ThreadPoolExecutor(max_workers=12) as executor:
+        future_th = executor.submit(fetch_tmdb_lang, "th-TH")
+        future_en = executor.submit(fetch_tmdb_lang, "en-US")
+        res_th = future_th.result()
+        res_en = future_en.result()
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(format_movie_for_react, raw_items[:12]))
+        merged = {}
+        for item in res_th + res_en:
+            if item.get("media_type") not in ("movie", "tv"):
+                continue
+            key = f"{item['media_type']}_{item['id']}"
+            if key not in merged:
+                merged[key] = item
+            elif item.get("title") or item.get("name"):
+                merged[key]["english_title"] = item.get("title") or item.get("name") or ""
 
-    for formatted, raw in zip(results, raw_items[:12]):
+        raw_items = list(merged.values())
+        raw_items.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+        top_items = raw_items[:12]
+
+        results = list(executor.map(format_movie_for_react, top_items))
+
+    for formatted, raw in zip(results, top_items):
         formatted["originalTitle"] = raw.get("english_title") or raw.get("original_title") or raw.get("original_name") or ""
 
+    CACHE[search_cache_key] = {"data": results, "expires_at": now + 600}
     return results
 
 # ==========================================
