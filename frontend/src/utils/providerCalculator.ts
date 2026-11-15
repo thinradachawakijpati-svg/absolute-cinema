@@ -6,7 +6,7 @@ export function calculateAllProviders(movies: Movie[]): ProviderStat[] {
     netflix: { providerId: 'netflix', name: 'Netflix', price: 169, color: 'bg-red-600', matchedCount: 0, matchedMovies: [], totalMinutes: 0, coveragePercent: 0, costPerMovie: 0 },
     disney: { providerId: 'disney', name: 'Disney+ Hotstar', price: 289, color: 'bg-blue-600', matchedCount: 0, matchedMovies: [], totalMinutes: 0, coveragePercent: 0, costPerMovie: 0 },
     prime: { providerId: 'prime', name: 'Prime Video', price: 149, color: 'bg-sky-500', matchedCount: 0, matchedMovies: [], totalMinutes: 0, coveragePercent: 0, costPerMovie: 0 },
-    hbogo: { providerId: 'hbogo', name: 'HBO GO', price: 199, color: 'bg-purple-600', matchedCount: 0, matchedMovies: [], totalMinutes: 0, coveragePercent: 0, costPerMovie: 0 },
+    hbo: { providerId: 'hbo', name: 'HBO GO', price: 199, color: 'bg-purple-600', matchedCount: 0, matchedMovies: [], totalMinutes: 0, coveragePercent: 0, costPerMovie: 0 },
   };
 
   movies.forEach((movie: Movie) => {
